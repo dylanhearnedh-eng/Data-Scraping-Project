@@ -1,0 +1,111 @@
+#project completed in Google colab and data loaded into MongoDB Atlas
+
+#beautifulsoup is used to scrape the data that will be loaded and analysed
+
+import pandas as pd
+#importing pandas so we can create a data frame
+from bs4 import BeautifulSoup
+import requests
+
+#This link will update every week with the new results
+url = 'https://en.wikipedia.org/wiki/2025%E2%80%9326_Premier_League'
+
+#week 1 and 2 were missed so had to be loaded from other sources, lookback machine was used to get week 1
+#and then wikipedia edits needed to be checked until a useable table for week 2 was found
+
+#week 1
+#url = 'https://web.archive.org/web/20250820131954/https://en.wikipedia.org/wiki/2025%E2%80%9326_Premier_League'
+#week 2
+#url = 'https://en.wikipedia.org/w/index.php?title=2025%E2%80%9326_Premier_League&oldid=1308184108'
+
+#headers needed to get permission from wikipedia
+headers = {"User-Agent": "MyWikipediaScraper/1.0 (20076625@mydbs.ie)"}
+page = requests.get(url, headers = headers)
+
+soup = BeautifulSoup(page.text, 'html')
+
+table = soup.find_all('table')[4]
+#this will ensure that the correct table is being used
+
+soup.find('table', class_ = 'tbody')
+#this locates what part of the table we want to pull data from
+
+titles = table.find_all('th')[0:10]
+#This dictates the headings
+
+table_titles = [title.text.strip() for title in titles]
+#this strips that titles of any extra characters leaving just what we need
+
+df = pd.DataFrame(columns = table_titles[0:8] + table_titles[9:10])
+#turning the titles we have into a data fram, dropping GD(goal difference) creating it in mongoDB
+
+column_data = table.find_all('tr')[1:21]
+#grabbing the data from the columns in the table
+
+for row in column_data:
+  row_data = row.find_all('td')[0:1] + row.find_all('th') + row.find_all('td')[1:7]  + row.find_all('td')[8:9]
+  individual_row_data = [data.text.strip() for data in row_data]
+  length = len(df)
+  df.loc[length] = individual_row_data
+#column data is in two different groups td and th so concatenating them together then stripping them
+#using a for loop on the row data so that each row loads data indivisdually
+
+df.to_csv(f'Premier_League_Table_25-26_Week_{individual_row_data[2]}.csv', index=False)
+#This saves the df to a csv to then be downloaded
+#f string used to make naming of the file automatic
+
+!pip install pymongo[srv]
+from pymongo import MongoClient
+import certifi
+#installs everything we need to load the data we have into mongoDB
+
+uri = "mongodb+srv://DylanDB:***mongopassword***@ClusterTest.aayathb.mongodb.net/testdb?retryWrites=true&w=majority"
+client = MongoClient(uri, tls = True,tlsCAFile=certifi.where())
+db = client['CA_Database']
+collection = db['League']
+#this outlines what mongoDB server to access and what database and collection to store the data in
+
+df3 = pd.DataFrame(columns = table_titles[0:8] + table_titles[9:10])
+#the name df3 is being used here to distinguish it from the df above to avoid confusion, but it is basically the same
+
+column_data3 = column_data
+#same situation here the name is just to ensure there are no crossed wires
+
+for row in column_data:
+  row_data = row.find_all('td')[0:1] + row.find_all('th') + row.find_all('td')[1:7]  + row.find_all('td')[8:9]
+  individual_row_data = [data.text.strip() for data in row_data]
+  #individual_row_data
+  length = len(df)
+  df.loc[length] = individual_row_data
+#as stated above this is how the rows are populated
+
+data_dict2 = df.to_dict("records")
+#This creates the table but in a dictionary form the way it would be shown in mongodb
+#it is number 2 because originally there was another data_dict for team names but it was depricated as i found a better way to do this
+
+week = (f'{individual_row_data[2]}')
+#f string used to automate the naming of the weeks
+
+#PLEASE DO NOT RUN THIS CODE IT WILL LOAD MORE DATA ONTO THE DATABASE
+
+#Gemini used here to save time typing each column name
+for stats in data_dict2:
+  team_name = stats['Team']
+  week_stats = {
+        "position": int(stats['Pos']),
+        "played": int(stats['Pld']),
+        "won": int(stats['W']),
+        "drawn": int(stats['D']),
+        "lost": int(stats['L']),
+        "goals_for": int(stats['GF']),
+        "goals_against": int(stats['GA']),
+        "points": int(stats['Pts'])
+    }
+  collection.update_one(
+    {"Team": team_name},
+    {"$set": {f"Stats.Week_{week}": week_stats}},
+    upsert=True
+  )
+#this is where the data gets loaded onto mongoDB, the name of the collection is taken directly from the file, and then based on the
+#week number the new stats are loaded onto their own subsection on MongoDB under the heading stats: week x
+#the naming of the rows is also updated to make it easier to understand on the MongoDB side
